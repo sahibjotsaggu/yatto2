@@ -1,10 +1,10 @@
 # YATTWO #
 
-An optimizer for Tap Titans 2, following in the footsteps of YATTO. Hosted at yattwo.me
+An optimizer for Tap Titans 2, following in the footsteps of YATTO. Hosted at [yattwo.me](http://yattwo.me/)
 
 ### How do I use it? ###
 
-Read the FAQ page
+Read the [FAQ](http://yattwo.me/faq) page
 
 ### How do I get set up? ###
 
