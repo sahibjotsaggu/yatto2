@@ -162,36 +162,6 @@ export class GameState {
            (ServerVarsModel.playerUpgradeCostGrowth - 1);
   }
 
-  // getGoldEquivalence() {
-  //   // get optimal tap/hero gold distribution
-  //   // cost = 1.082 for hero, 1.062 for player
-  //   var monsterGold = getAverageMonsterGold();
-
-  //   var tempSwordMaster = this.getMaxPlayerUpgrades(1, monsterGold);
-  //   var tempHeroLevels = Object.assign({}, this.heroes.levels);
-  //   for (var hero in tempHeroLevels) {
-  //     tempHeroLevels[hero] = this.getMaxHeroUpgrades(HeroInfo[hero], 1, monsterGold);
-  //   }
-
-  //   // save values
-  //   var oldSwordMaster = this.swordmaster.level;
-  //   var oldHeroLevels = Object.assign({}, this.heroes.levels);
-
-  //   this.swordmaster.level = tempSwordMaster;
-  //   this.heroes.levels = tempHeroLevels;
-
-  //   var tapDPS = this.getAverageCritDamage();
-  //   var heroDPS = this.getHeroDamage();
-
-  //   this.swordmaster.level = oldSwordMaster;
-  //   this.heroes.levels = oldHeroLevels;
-
-  //   // get proportion of tap/hero damage
-  //   // get current cost/damage conversion
-
-  // }
-
-
   // PlayerModel.GetCurrentDamageFromLevel()
   getBaseTapDamage() {
     var swordmaster = this.swordmaster.level *
@@ -284,10 +254,6 @@ export class GameState {
     return (tapDPS + petDPS + heroDPS) / this.getBonus(BonusType.MonsterHP);
   }
 
-  getGoldMultiplier() {
-    return this.getAverageMonsterGold();
-  }
-
   getDamageEquivalent(tps, reload = false) {
     if (!this.bonuses || reload) {
       this.calculateBonuses();
@@ -303,10 +269,101 @@ export class GameState {
 
     // TODO: alternative option:
     // calculate hero and SM equivalents separately, then skew
-    // console.log("multiplier: ", Math.pow(a, extraLevels), " dps: ", this.getDPS(tps));
     return Math.pow(a, extraLevels) * this.getDPS(tps);
+  }
 
-    // return Math.pow(1.05, (Math.log(this.getGoldMultiplier()) / Math.log(1.072))) * this.getDPS(tps);
+  getGoldMultiplier() {
+    // Average hp across five stages:
+    // # of monsters                                  + boss
+    // base^0 + base^0 + base^0 + base^0 + base^0 ... + 2*base^0
+    // base^1 + base^1 + base^1 + base^1 + base^1 ... + 3*base^1
+    // base^2 + base^2 + base^2 + base^2 + base^2 ... + 4*base^2
+    // base^3 + base^3 + base^3 + base^3 + base^3 ... + 5*base^3
+    // base^4 + base^4 + base^4 + base^4 + base^4 ... + 8*base^4
+
+    // Get base gold (without bonuses)
+    var monsterCount = this.getMonsterCount(this.info.maxStage);
+    var baseHP = this.getBaseMonsterHP(this.info.maxStage);
+    var hpGrowth = this.info.maxStage > ServerVarsModel.monsterHPLevelOff ? ServerVarsModel.monsterHPBase2 : ServerVarsModel.monsterHPBase1;
+    var baseGold = 0;
+    var actualGold = 0;
+    for (var i of [0, 1, 2, 3, 4]) {
+      // Get base monster gold with 1 as base
+      var baseMonsterHP = Math.pow(hpGrowth, i) * baseHP;
+      var baseMonsterGold = this.getMonsterGold(baseMonsterHP, this.info.maxStage, {}) * monsterCount;
+
+      // Get actual monster gold with bonuses
+      var monsterHP = baseMonsterHP * this.getBonus(BonusType.MonsterHP);
+      var monsterGold = this.getMonsterGold(monsterHP, this.info.maxStage, this.bonuses) * monsterCount;
+
+      // Get base boss gold
+      var baseBossHP = baseMonsterHP * ServerVarsModel.themeMultiplierSequence[i];
+      var baseBossGold = this.getBossGold(baseBossHP, this.info.maxStage, {});
+
+      // Get actual boss gold
+      var bossHP = baseBossHP * this.getBonus(BonusType.MonsterHP);
+      var bossGold = this.getBossGold(bossHP, this.info.maxStage, this.bonuses);
+
+      baseGold += baseMonsterGold + baseBossGold;
+      actualGold += monsterGold + bossGold;
+    }
+
+    // Get multiplier
+    return actualGold / baseGold;
+  }
+
+  getMonsterGold(hp, maxstage, bonuses) {
+    var base = (hp * ServerVarsModel.monsterGoldMultiplier +
+               (ServerVarsModel.monsterGoldSlope * Math.min(maxstage, ServerVarsModel.noMoreMonsterGoldSlope))) *
+               getBonus(bonuses, BonusType.GoldAll);
+
+    // goldx10Chance of the time, you get x10
+    // (1 - goldx10Chance) of the time, you get x1
+    var goldx10Chance = ServerVarsModel.goldx10Chance + getBonus(bonuses, BonusType.Goldx10Chance);
+    var goldx10Multiplier = ((goldx10Chance * 9) + 1);
+
+    // chestersonChance of the time, it's a chesterson
+    // (1 - chestersonChance) of the time, it's a normal
+    var chestersonChance = ServerVarsModel.chestersonChance + getBonus(bonuses, BonusType.ChestChance);
+    var chestersonMultiplier = ServerVarsModel.treasureGold * getBonus(bonuses, BonusType.ChestAmount);
+
+    var normalChance = 1 - chestersonChance;
+    var normalMultiplier = getBonus(bonuses, BonusType.GoldMonster);
+
+    // familyChance of the time, you get x[2, 5]
+    // (1 - familyChance) of the time, you get x1
+    var familyChance = ServerVarsModel.multiMonsterBaseChance + getBonus(bonuses, BonusType.MultiMonster);
+    var familyMultiplier = ((familyChance * 2.5) + 1);
+
+    return base * goldx10Multiplier * familyMultiplier * (chestersonChance * chestersonMultiplier + normalChance * normalMultiplier);
+  }
+
+  getBossGold(bossHP, maxstage, bonuses) {
+    var base = (bossHP * ServerVarsModel.monsterGoldMultiplier +
+               (ServerVarsModel.monsterGoldSlope * Math.min(maxstage, ServerVarsModel.noMoreMonsterGoldSlope))) *
+               getBonus(bonuses, BonusType.GoldAll);
+
+    // goldx10Chance of the time, you get x10
+    // (1 - goldx10Chance) of the time, you get x1
+    var goldx10Chance = ServerVarsModel.goldx10Chance + getBonus(bonuses, BonusType.Goldx10Chance);
+    var goldx10Multiplier = ((goldx10Chance * 9) + 1);
+
+    var bossMultiplier =
+      Math.max(
+        ServerVarsModel.maxBossGoldMultiplier,
+        Math.min(
+          1.0,
+          Math.ceil((maxstage - 5) / 5) * ServerVarsModel.bossGoldMultiplierSlope)) *
+      getBonus(bonuses, BonusType.GoldBoss);
+
+    return base * goldx10Multiplier * bossMultiplier;
+  }
+
+  // MonsterModel.GetMonsterHP
+  getBaseMonsterHP(stage) {
+    return ServerVarsModel.monsterHPMultiplier *
+      Math.pow(ServerVarsModel.monsterHPBase1, Math.min(stage, ServerVarsModel.monsterHPLevelOff)) *
+      Math.pow(ServerVarsModel.monsterHPBase2, Math.max(stage - ServerVarsModel.monsterHPLevelOff, 0));
   }
 
   // StageLogic.GetEnemyCount()
@@ -317,75 +374,6 @@ export class GameState {
         ServerVarsModel.maxMonsterCount,
         ServerVarsModel.monsterCountBase + Math.floor(stage / 1000) * ServerVarsModel.monsterCountInc) -
       this.getBonus(BonusType.MonsterCountPerStage));
-  }
-
-  getAverageMonsterHPUnits() {
-    // Average hp across five stages:
-    // # of monsters                                  + boss
-    // base^0 + base^0 + base^0 + base^0 + base^0 ... + 2*base^0
-    // base^1 + base^1 + base^1 + base^1 + base^1 ... + 3*base^1
-    // base^2 + base^2 + base^2 + base^2 + base^2 ... + 4*base^2
-    // base^3 + base^3 + base^3 + base^3 + base^3 ... + 5*base^3
-    // base^4 + base^4 + base^4 + base^4 + base^4 ... + 8*base^4
-    var monsterCount = this.getMonsterCount(this.info.maxStage);
-    var hpBase = this.info.maxStage > ServerVarsModel.monsterHPLevelOff ? ServerVarsModel.monsterHPBase2 : ServerVarsModel.monsterHPBase1;
-    var totalHPUnits = 0;
-    for (var i of [0, 1, 2, 3, 4]) {
-      totalHPUnits += Math.pow(hpBase, i) * (monsterCount + ServerVarsModel.themeMultiplierSequence[i]);
-    }
-    var averageHPUnits = totalHPUnits / ((monsterCount + 1) * 5);
-    return averageHPUnits;
-  }
-
-  getAverageMonsterGold() {
-    var monsterCount = this.getMonsterCount(this.info.maxStage);
-
-    var actualBase = this.getAverageMonsterHPUnits() * 1 * ServerVarsModel.monsterGoldMultiplier +
-               (ServerVarsModel.monsterGoldSlope * Math.min(this.info.maxStage, ServerVarsModel.noMoreMonsterGoldSlope));
-
-    // MonterModel.GetMonsterGoldDrop
-    var base = (this.getAverageMonsterHPUnits() * this.getBonus(BonusType.MonsterHP) * ServerVarsModel.monsterGoldMultiplier +
-               (ServerVarsModel.monsterGoldSlope * Math.min(this.info.maxStage, ServerVarsModel.noMoreMonsterGoldSlope))) *
-              this.getBonus(BonusType.GoldAll);
-    var baseMultiplier = base / actualBase;
-
-    // goldx10Chance of the time, you get x10
-    // (1 - goldx10Chance) of the time, you get x1
-    var goldx10Chance = ServerVarsModel.goldx10Chance + this.getBonus(BonusType.Goldx10Chance);
-    var goldx10Multiplier = ((goldx10Chance * 9) + 1);
-
-    // 1 / (monsterCount + 1) of the time, it's a boss
-    var bossChance = (1 / (monsterCount + 1));
-    var bossMultiplier =
-      Math.max(
-        ServerVarsModel.maxBossGoldMultiplier,
-        Math.min(
-          1.0,
-          Math.ceil((this.info.maxStage - 5) / 5) * ServerVarsModel.bossGoldMultiplierSlope)) *
-      this.getBonus(BonusType.GoldBoss);
-
-    // (1 - bossChance) * chestersonChance of the time, it's a chesterson
-    // (1 - bossChance)  * (1 - chestersonChance) of the time, it's a normal
-    var nonBossChance = 1 - bossChance;
-
-    var chestersonChance = ServerVarsModel.chestersonChance + this.getBonus(BonusType.ChestChance);
-    var chestersonMultiplier = ServerVarsModel.treasureGold * this.getBonus(BonusType.ChestAmount);
-
-    var monsterChance = 1 - chestersonChance;
-    var monsterMultiplier = this.getBonus(BonusType.GoldMonster);
-
-    // familyChance of the non-boss time, you get x[2, 5]
-    // (1 - familyChance) of the non-boss time, you get x1
-    var familyChance = ServerVarsModel.multiMonsterBaseChance + this.getBonus(BonusType.MultiMonster);
-    var familyMultiplier = ((familyChance * 2.5) + 1);
-
-    // base * goldx10Multiplier * (bossChance * bossMultiplier)
-    //                             +
-    //                            (monsterChance * (1 - chestersonChance) * monsterMultiplier * familyMultiplier)
-    //                             +
-    //                            (monsterChance * chestersonChance * chestersonMultiplier * familyMultiplier)
-    var nonBossMultiplier = familyMultiplier * (chestersonChance * chestersonMultiplier + monsterChance * monsterMultiplier);
-    return baseMultiplier * goldx10Multiplier * (bossChance * bossMultiplier + nonBossChance * nonBossMultiplier);
   }
 
   // InactiveGameplayModel.GetTotalDPS()
@@ -558,7 +546,6 @@ export class GameState {
     // }
     // return Math.Max(Singleton<BonusModel>.instance.GetBonus(BonusType.GoldAll), num);
   }
-
 
   getRelicsFromStage(stage) {
 
